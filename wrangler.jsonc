@@ -14,13 +14,13 @@
     {
       "binding": "DB",
       "database_name": "keystone-moulding-tracker",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+      "database_id": "9a6fa454-5db4-48ea-bc5c-a34d2a9f55e1"
     }
   ],
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "REPLACE_WITH_TEAM.cloudflareaccess.com",
-    "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
-    "TRACKER_SETUP_EMAIL": "REPLACE_WITH_YOUR_ACCESS_EMAIL"
+    "ACCESS_TEAM_DOMAIN": "keystonewood.workers.dev",
+    "ACCESS_AUD": "7edd2564a1c7e40885cf490fa9dbaa900c279b7203ce340295911df26f3a5f63",
+    "TRACKER_SETUP_EMAIL": "hunter@keystonewood.com"
   },
   "routes": [
     {

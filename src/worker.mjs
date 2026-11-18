@@ -37,6 +37,45 @@ function sameOriginJson(request, url) {
     && request.headers.get('Content-Type')?.split(';')[0] === 'application/json';
 }
 
+async function overridesRequest(request, env, email, url) {
+  if (!canInitialize(env, email)) return response({ error: 'Moulding admin access is required.' }, 403);
+  if (request.method !== 'GET' && request.method !== 'PUT') return response({ error: 'Method not allowed.' }, 405);
+  if (request.method === 'PUT' && !sameOriginJson(request, url)) {
+    return response({ error: 'Expected a same-origin JSON request.' }, 403);
+  }
+  const current = await readState(env.DB);
+  if (!current) return response({ error: 'Import the tracking history before adding overrides.' }, 503);
+  const overrides = current.data.mouldingOverrides ?? {};
+  if (request.method === 'GET') return response({ revision: current.revision, overrides });
+
+  let input;
+  try {
+    if (Number(request.headers.get('Content-Length')) > 4096) throw new Error();
+    const body = await request.text();
+    if (body.length > 4096) throw new Error();
+    input = JSON.parse(body);
+  } catch {
+    return response({ error: 'Invalid moulding override.' }, 400);
+  }
+  const { revision, number, widthInches, sticksPerPass } = input ?? {};
+  if (typeof number !== 'string' || !/^\d{4}$/.test(number)
+    || (widthInches !== null && !(Number.isFinite(widthInches) && widthInches > 0))
+    || (sticksPerPass !== null && !(Number.isSafeInteger(sticksPerPass) && sticksPerPass >= 1))) {
+    return response({ error: 'Enter a four-digit moulding number, a positive width, and a whole number of sticks.' }, 400);
+  }
+  const conflict = () => response({ error: 'Tracking changed. Review the latest overrides and try again.' }, 409);
+  if (revision !== current.revision) return conflict();
+
+  const next = { ...overrides };
+  if (widthInches === null && (sticksPerPass === null || sticksPerPass === 1)) delete next[number];
+  else next[number] = { widthInches, sticksPerPass: sticksPerPass === 1 ? null : sticksPerPass };
+  const data = { ...current.data, mouldingOverrides: next };
+  const update = prepareUpdate(data, current.data, email);
+  return await writeState(env.DB, current.revision, update, email)
+    ? response({ revision: current.revision + 1, overrides: next })
+    : conflict();
+}
+
 async function setupRequest(request, env, email, url) {
   if (request.method !== 'POST') return response({ error: 'Method not allowed.' }, 405);
   if (!canInitialize(env, email) || !sameOriginJson(request, url)) {
@@ -92,6 +131,11 @@ async function stateRequest(request, env, email, url) {
   if (input.revision !== current.revision) return conflict();
   let update;
   try {
+    if (input.data && typeof input.data === 'object') {
+      // Override configuration changes are accepted only through the admin endpoint.
+      if (current.data.mouldingOverrides) input.data.mouldingOverrides = current.data.mouldingOverrides;
+      else delete input.data.mouldingOverrides;
+    }
     update = prepareUpdate(input.data, current.data, email);
   } catch (error) {
     return response({ error: error.message }, 400);
@@ -109,6 +153,11 @@ export default {
 
     const url = new URL(request.url);
     try {
+      const assetPath = decodeURIComponent(url.pathname).replace(/\/{2,}/g, '/');
+      if (/^\/admin(?:\.html)?\/?$/i.test(assetPath) && !canInitialize(env, email)) {
+        return new Response('Moulding admin access is required.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
+      }
+      if (url.pathname === '/api/admin/overrides') return await overridesRequest(request, env, email, url);
       if (url.pathname === '/api/state') return await stateRequest(request, env, email, url);
       if (url.pathname === '/api/setup') return await setupRequest(request, env, email, url);
       if (url.pathname.startsWith('/api/')) return response({ error: 'Not found.' }, 404);
@@ -126,3 +175,4 @@ export default {
     }
   }
 };
+

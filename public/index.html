@@ -89,11 +89,35 @@ main.shell { padding-block: 14px 36px; }
 .import-panel, #initialSetup { padding: 19px 21px; }
 .upload {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 15px;
   margin-top: 12px;
 }
+.pdf-drop {
+  min-width: 0;
+  padding: 12px;
+  border: 1px dashed #aab9ad;
+  border-radius: 9px;
+  background: var(--soft);
+}
+.pdf-drop.is-ready { border-style: solid; border-color: #7b9e84; background: var(--mint); }
+.pdf-drop.is-dragging { outline: 2px solid var(--pine); outline-offset: 2px; }
+.pdf-file-status { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--subtle); font-size: .79rem; }
+.pdf-file-status::before {
+  content: "";
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid #819087;
+  border-radius: 4px;
+  background: var(--surface);
+}
+.pdf-drop.is-ready .pdf-file-status { color: var(--pine-dark); font-weight: 700; }
+.pdf-drop.is-ready .pdf-file-status::before { content: "✓"; background: var(--pine); border-color: var(--pine); color: #fff; }
+.import-actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; }
+#pdfReadiness { font-weight: 650; }
+#pdfReadiness.is-ready { color: var(--pine-dark); }
 label { display: block; margin-bottom: 6px; font-size: .83rem; font-weight: 680; }
 input[type="file"] {
   width: 100%;
@@ -228,7 +252,6 @@ dialog p { color: var(--subtle); margin-block: 12px; }
 @media (max-width: 840px) {
   .shell { width: calc(100% - 36px); }
   .upload { grid-template-columns: 1fr 1fr; }
-  #generate { grid-column: 1 / -1; justify-self: start; }
   .instruction-grid { grid-template-columns: 1fr; gap: 8px; }
 }
 @media (max-width: 530px) {
@@ -260,10 +283,21 @@ dialog p { color: var(--subtle); margin-block: 12px; }
   <section class="panel import-panel" data-working aria-labelledby="importHeading">
     <h2 id="importHeading">Import schedule</h2>
     <div class="upload">
-      <div><label for="schedule">MFG Moulding Schedule</label><input type="file" id="schedule" accept=".pdf,application/pdf"></div>
-      <div><label for="wip">Order Entry Moulding Schedule Summary</label><input type="file" id="wip" accept=".pdf,application/pdf"></div>
+      <div id="scheduleDrop" class="pdf-drop">
+        <label for="schedule">MFG Moulding Schedule</label>
+        <input type="file" id="schedule" accept=".pdf,application/pdf" aria-describedby="scheduleStatus">
+        <div class="pdf-file-status"><span id="scheduleStatus">Drop or choose a PDF</span></div>
+      </div>
+      <div id="wipDrop" class="pdf-drop">
+        <label for="wip">Order Entry Moulding Schedule Summary</label>
+        <input type="file" id="wip" accept=".pdf,application/pdf" aria-describedby="wipStatus">
+        <div class="pdf-file-status"><span id="wipStatus">Drop or choose a PDF</span></div>
+      </div>
       <input type="hidden" id="days" value="6">
-      <button id="generate" class="primary" data-needs-db>Generate</button>
+    </div>
+    <div class="import-actions">
+      <span id="pdfReadiness" class="muted" role="status">0 of 2 PDFs selected</span>
+      <button id="generate" class="primary" data-needs-db disabled>Generate</button>
     </div>
   </section>
   <div id="message" class="notice" role="status">Loading shared tracker…</div>
@@ -288,4 +322,5 @@ dialog p { color: var(--subtle); margin-block: 12px; }
 </main>
 <dialog id="reportDone" aria-labelledby="reportDoneTitle"><h2 id="reportDoneTitle">Did the report print?</h2><p id="reportDoneDetail"></p><p>Print at 100% / Actual Size, with margins None and headers/footers off. Do not use Fit or Shrink. Verify the 1-inch scale check, then confirm the report is ready for the moulder.</p><div class="actions"><button id="printedSave" class="primary">Printed — Mark Sent &amp; Save</button><button id="notPrinted">Not printed</button></div></dialog>
 <script type="module" src="/tracker.mjs"></script></body></html>
+
 

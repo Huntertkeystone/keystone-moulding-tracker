@@ -9,6 +9,10 @@ let generating=false, saving=false, refreshing=false, printing=false, pendingPri
 let setupAvailable=false, viewingBatch=null;
 const displayState=()=>viewingBatch?.data??db;
 const batchDate=new Intl.DateTimeFormat('en-US',{dateStyle:'medium',timeStyle:'short',timeZone:'America/New_York'});
+const activityDate=new Intl.DateTimeFormat('en-US',{dateStyle:'medium',timeZone:'America/New_York'});
+function batchLabel(batch){
+  return batch.day?activityDate.format(new Date(batch.savedAt))+' · Reconstructed':batchDate.format(new Date(batch.savedAt));
+}
 const busy=()=>generating||saving||refreshing||printing;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,''), now=()=>new Date().toISOString();
 function message(s,error=false){$('message').textContent=s;$('message').className=error?'error':'notice';}
@@ -216,13 +220,12 @@ function render(){
   document.body.classList.toggle('tracking-locked',!enabled);
   for(const id of ['schedule','wip','search'])$(id).disabled=!enabled||busy();
   document.querySelectorAll('[data-needs-db], [data-tab]').forEach(e=>e.disabled=!enabled||busy());
-  $('refresh').disabled=busy()||historical;
   for(const id of ['schedule','wip','print'])$(id).disabled=!enabled||busy()||historical;
   $('print').hidden=historical;
   $('newBatch').disabled=busy()||historical||(!db?.snapshot&&!Object.keys(db?.records??{}).length);
   $('viewBatches').disabled=busy();
   $('archiveBanner').hidden=!historical;
-  $('archiveLabel').textContent=historical?'Saved batch · '+batchDate.format(new Date(viewingBatch.savedAt)):'';
+  $('archiveLabel').textContent=historical?batchLabel(viewingBatch):'';
   $('importPanel').hidden=historical;
   $('workActions').hidden=historical;
   updateGenerate();
@@ -293,7 +296,7 @@ function acceptShared(payload){
   }
 }
 
-async function refreshShared(announce=false){
+async function refreshShared(){
   if(busy()||$('reportDone').open)return;
   refreshing=true;
   try{
@@ -309,9 +312,9 @@ async function refreshShared(announce=false){
       selection.clear();
       pendingPrint=null;
       message('Latest shared tracking loaded.');
-    }else if(announce)message('Tracking is up to date.');
+    }
   }catch(error){
-    if(announce||!db){setupAvailable=false;message(error.message,true);}
+    if(!db){setupAvailable=false;message(error.message,true);}
   }finally{
     refreshing=false;
     render();
@@ -339,7 +342,6 @@ async function save(success){
   }
 }
 
-$('refresh').onclick=()=>refreshShared(true);
 $('newBatch').onclick=async()=>{
   if(!db||busy()||viewingBatch||!confirm('Save this batch to history and start a new work list?'))return;
   saving=true;
@@ -359,7 +361,7 @@ async function openSavedBatch(id){
     const batch=await sharedRequest(null,'GET','/api/batches/'+encodeURIComponent(id));
     if(!$('batchHistory').open)return;
     viewingBatch=batch;
-    tab='new';
+    tab=batch.day?(Object.values(batch.data.records).some(row=>row.status==='Sent to Moulder')?'sent':'pull'):'new';
     selection.clear();
     $('search').value='';
     $('batchHistory').close();
@@ -380,7 +382,7 @@ $('viewBatches').onclick=async()=>{
     for(const batch of batches){
       const button=document.createElement('button');
       button.type='button';
-      button.textContent=batchDate.format(new Date(batch.savedAt));
+      button.textContent=batchLabel(batch);
       button.onclick=()=>openSavedBatch(batch.id);
       list.append(button);
     }
@@ -526,5 +528,6 @@ window.addEventListener('beforeunload',event=>{
 window.addEventListener('focus',()=>refreshShared());
 setInterval(()=>{if(document.visibilityState==='visible')refreshShared();},30000);
 refreshShared();
+
 
 

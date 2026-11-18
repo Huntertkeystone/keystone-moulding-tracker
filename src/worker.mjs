@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { MAX_BYTES, initializeState, prepareUpdate, readBatches, readState, startBatch, validateTracker, writeState } from './state.mjs';
+import { MAX_BYTES, initializeState, prepareUpdate, readBatchHistory, readState, startBatch, validateTracker, writeState } from './state.mjs';
 
 const signingKeys = new Map();
 
@@ -39,11 +39,11 @@ function sameOriginJson(request, url) {
 
 async function batchesRequest(request, env, email, url) {
   const id = url.pathname.startsWith('/api/batches/') ? url.pathname.slice('/api/batches/'.length) : null;
-  if (id !== null && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) {
+  if (id !== null && !/^(?:[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}|legacy-\d{4}-\d{2}-\d{2})$/i.test(id)) {
     return response({ error: 'Batch not found.' }, 404);
   }
   if (request.method === 'GET') {
-    const result = await readBatches(env.DB, id);
+    const result = await readBatchHistory(env.DB, id);
     if (!id) return response({ batches: result });
     return result ? response(result) : response({ error: 'Batch not found.' }, 404);
   }
@@ -209,5 +209,6 @@ export default {
     }
   }
 };
+
 
 

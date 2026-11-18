@@ -182,6 +182,76 @@ export async function readBatches(db, id) {
   return { id: batchId, startedAt, savedAt, data: JSON.parse(results.map(row => row.body).join('')) };
 }
 
+const easternDay = new Intl.DateTimeFormat('en-CA', {
+  year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/New_York'
+});
+const datedStatuses = new Set(['Sent to Moulder', 'To Pull']);
+
+function reconstructDatedBatches(source) {
+  const byDay = new Map();
+  const seenActivities = new Set();
+  function batchAt(value) {
+    const time = Date.parse(value);
+    if (!Number.isFinite(time)) return null;
+    const date = new Date(time), at = date.toISOString();
+    const parts = Object.fromEntries(easternDay.formatToParts(date).map(part => [part.type, part.value]));
+    const day = parts.year + '-' + parts.month + '-' + parts.day;
+    if (!byDay.has(day)) byDay.set(day, {
+      id: 'legacy-' + day, day, startedAt: at, savedAt: at, records: {}, reports: []
+    });
+    const batch = byDay.get(day);
+    if (at < batch.startedAt) batch.startedAt = at;
+    if (at > batch.savedAt) batch.savedAt = at;
+    return { batch, at };
+  }
+  function add(row, status, markedAt) {
+    if (!isRow(row) || !datedStatuses.has(status)) return;
+    const dated = batchAt(markedAt);
+    if (!dated) return;
+    const { batch, at } = dated;
+    const key = row.key + '|' + status;
+    seenActivities.add(key);
+    const previous = batch.records[key];
+    if (!previous || previous.markedAt <= at) {
+      batch.records[key] = { ...row, key, status, markedAt: at, alreadyRun: false };
+    }
+  }
+  for (const event of source.history ?? []) {
+    add(event.current, event.status, event.at ?? event.current?.markedAt);
+  }
+  for (const report of source.reports ?? []) {
+    if (!Array.isArray(report.rows)) continue;
+    const dated = batchAt(report.sentAt);
+    if (!dated) continue;
+    dated.batch.reports.push(report);
+    for (const row of report.rows) add({ ...row, markedBy: report.sentBy ?? row.markedBy }, 'Sent to Moulder', report.sentAt);
+  }
+  for (const row of [...Object.values(source.archivedRecords ?? {}), ...Object.values(source.records ?? {})]) {
+    if (!seenActivities.has(row.key + '|' + row.status)) add(row, row.status, row.markedAt);
+  }
+  return [...byDay.values()].map(({ records, reports, ...batch }) => {
+    const rows = Object.values(records);
+    return { ...batch, data: {
+      records, reports, archivedRecords: {}, snapshot: { rows, scheduleCount: rows.length }
+    } };
+  });
+}
+
+export async function readBatchHistory(db, id) {
+  if (id && !id.startsWith('legacy-')) return readBatches(db, id);
+  const current = await readState(db);
+  const saved = await readBatches(db, null);
+  let legacy = current?.data;
+  if (legacy?.activeBatch) {
+    // The first saved batch holds the data from before dated batches were introduced.
+    legacy = saved.length ? (await readBatches(db, saved.at(-1).id))?.data : null;
+  }
+  const reconstructed = legacy && !legacy.activeBatch ? reconstructDatedBatches(legacy) : [];
+  if (id) return reconstructed.find(batch => batch.id === id) ?? null;
+  return [...saved, ...reconstructed.map(({ data: _data, ...batch }) => batch)]
+    .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+
 export function startBatch(data) {
   const timestamp = new Date().toISOString();
   const priorScheduled = { ...data.priorScheduled };
@@ -205,4 +275,5 @@ export function startBatch(data) {
   };
   return { data: next, update: { timestamp, chunks: splitState(next, 250_000) }, archive };
 }
+
 

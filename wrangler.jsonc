@@ -24,7 +24,7 @@
   },
   "routes": [
     {
-      "pattern": "moulding.example.com",
+      "pattern": "moulding.keystonewood.workers.dev",
       "custom_domain": true
     }
   ]

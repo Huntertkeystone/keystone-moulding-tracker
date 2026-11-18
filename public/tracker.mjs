@@ -6,7 +6,9 @@ const statuses=['New','To Run','To Pull','Sent to Moulder'];
 const tabStatus={run:'To Run',pull:'To Pull',sent:'Sent to Moulder'};
 let db=null, committed=null, revision=0, operator='', tab='new', selection=new Set();
 let generating=false, saving=false, refreshing=false, printing=false, pendingPrint=null;
-let setupAvailable=false;
+let setupAvailable=false, viewingBatch=null;
+const displayState=()=>viewingBatch?.data??db;
+const batchDate=new Intl.DateTimeFormat('en-US',{dateStyle:'medium',timeStyle:'short',timeZone:'America/New_York'});
 const busy=()=>generating||saving||refreshing||printing;
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,''), now=()=>new Date().toISOString();
 function message(s,error=false){$('message').textContent=s;$('message').className=error?'error':'notice';}
@@ -110,11 +112,25 @@ function parseWip(text){if(!text.includes('INVOICE')||!text.includes('ASSEMBLE B
 function stock(r){let s=norm(r.species);return STOCK.has(r.number)&&(['maple','hardmaple','maplehard'].includes(s)||s.includes('paintgrade'));}
 function longNotes(notes){return notes.filter(n=>{n=n.replace(/[′’]/g,"'").replace(/″/g,'"');let found=false;for(const m of n.matchAll(/(\d+(?:\.\d+)?)\s*(?:'|feet\b|ft\b)(?:\s*(\d+(?:\.\d+)?)\s*(?:"|in\b))?/gi))if(+m[1]*12+ +(m[2]||0)>96)found=true;for(const m of n.matchAll(/(\d+(?:\.\d+)?)\s*(?:"|inches\b|in\b)\s*(?:long|length)/gi))if(+m[1]>96)found=true;return found;});}
 async function mergePDFs(a,b){const schedule=parseSchedule(a),wip=parseWip(b),counts=new Map();for(const r of schedule){const key=r.order+'|'+r.number+'|'+norm(r.description);counts.set(key,(counts.get(key)||0)+1);}let rows=[];for(const r of schedule){let issues=[];const matches=wip.filter(w=>w.order===r.order&&w.number===r.number&&norm(w.description)===norm(r.description));let notes=[],date='';if(matches.length!==1)issues.push('WIP match missing or ambiguous — check sizing.');else{notes=matches[0].notes;date=matches[0].date;if(matches[0].qty!==r.qty)issues.push(`Quantity mismatch: schedule ${r.qty}, WIP ${matches[0].qty}.`);let nq=notes.reduce((s,n)=>s+ +(n.match(/^\((\d+)\)/)?.[1]||0),0);if(nq>r.qty)issues.push('Sizing quantities exceed the order line quantity.');}if(counts.get(r.order+'|'+r.number+'|'+norm(r.description))>1)throw Error(`Duplicate indistinguishable lines for ${r.order} / ${r.number}. Import stopped to avoid overwriting one line with another.`);const key=r.order+'-'+r.number+'-'+(await hash(norm(r.description))).slice(0,16);const fingerprint=await hash(JSON.stringify({qty:r.qty,notes:notes.map(n=>n.toLowerCase().replace(/\s+/g,' ').trim()).sort()}));rows.push({...r,key,fingerprint,notes,date,issues,stock:stock(r),long:longNotes(notes)});}return {rows,scheduleCount:schedule.length,wipCount:wip.length};}
-function record(r){return db.records[r.key];}
-function review(r){let list=[...r.issues],old=record(r);if(old&&old.fingerprint!==r.fingerprint)list.push('Changed since last marked — compare quantity and sizing before marking again.');if(!old&&Object.values({...db.archivedRecords,...db.records}).some(o=>o.order===r.order&&o.number===r.number&&o.status!=='New'))list.push('Variant exists — another species or finish on this order/profile was marked.');if(!old&&db.archivedRecords?.[r.key])list.push('Previously removed from the MFG schedule — review before requesting again.');return list;}
+function record(r){
+  const data=displayState();
+  return data?.records[r.key]??(viewingBatch?data?.archivedRecords?.[r.key]:undefined);
+}
+function priorWarning(r){
+  if(viewingBatch)return '';
+  const prior=db?.priorScheduled?.[r.order+'|'+r.number];
+  return prior?'Earlier batch: '+prior[0]+' · '+batchDate.format(new Date(prior[1]))+'. Verify before scheduling again.':'';
+}
+function review(r){let list=[...r.issues],old=record(r),data=displayState();if(old&&old.fingerprint!==r.fingerprint)list.push('Changed since last marked — compare quantity and sizing before marking again.');if(!old&&Object.values({...data.archivedRecords,...data.records}).some(o=>o.order===r.order&&o.number===r.number&&o.status!=='New'))list.push('Variant exists — another species or finish on this order/profile was marked.');if(!old&&data.archivedRecords?.[r.key])list.push('Previously removed from the MFG schedule — review before requesting again.');return list;}
 function hidden(r){if(r.alreadyRun)return true;let o=record(r);return o&&o.status!=='New'&&o.fingerprint===r.fingerprint&&!review(r).length;}
-function currentRows(){return db?.snapshot?.rows||[];}
-function visibleRows(){let search=$('search').value.toLowerCase();let rows=currentRows().filter(r=>tab==='completed'?r.alreadyRun:!r.alreadyRun&&(tab==='new'?(r.days<=6&&!hidden(r)):(record(r)?.status===tabStatus[tab]&&!review(r).length)));return rows.filter(r=>[r.order,r.number,r.species,r.description].join(' ').toLowerCase().includes(search)).sort((a,b)=>(a.days??999)-(b.days??999)||a.number.localeCompare(b.number)||a.species.localeCompare(b.species));}
+function currentRows(){
+  const data=displayState(), rows=data?.snapshot?.rows??[];
+  if(!viewingBatch)return rows;
+  const keys=new Set(rows.map(row=>row.key));
+  return [...rows,...Object.values({...data.archivedRecords,...data.records})
+    .filter(row=>!keys.has(row.key)).map(row=>({...row,absent:true}))];
+}
+function visibleRows(){let search=$('search').value.toLowerCase();let rows=currentRows().filter(r=>tab==='completed'?r.alreadyRun:!r.alreadyRun&&(tab==='new'?(r.days<=6&&!hidden(r)):(record(r)?.status===tabStatus[tab]&&(viewingBatch||!review(r).length))));return rows.filter(r=>[r.order,r.number,r.species,r.description].join(' ').toLowerCase().includes(search)).sort((a,b)=>(a.days??999)-(b.days??999)||a.number.localeCompare(b.number)||a.species.localeCompare(b.species));}
 function sizingLabel(r){
  const notes=r.notes||[]; let used=0;
  const explicit=n=>/(?:\d\s*(?:['′’]|ft\b|feet\b)|(?:"|inches\b|in\b)\s*(?:long|length))/i.test(n);
@@ -134,7 +150,7 @@ function formatRunWidth(widthInches){
 }
 
 function overrideLabel(number){
-  const override=db?.mouldingOverrides?.[number];
+  const override=displayState()?.mouldingOverrides?.[number];
   if(!override)return '';
   const labels=[];
   if(override.widthInches>0)labels.push('Run width '+formatRunWidth(override.widthInches)+'″');
@@ -142,7 +158,7 @@ function overrideLabel(number){
   return labels.join(' · ');
 }
 
-function rowHTML(r,interactive=true){let o=record(r),rev=review(r),flags='';if(r.stock){flags+='<div class="flag stock-callout"><strong>STOCK PROFILE + SPECIES</strong><br>CHECK HARD MAPLE STOCK BEFORE RUNNING</div>';if(r.long?.length)flags+='<div class="flag red">OVER 8′ — VERIFY STOCK LENGTH; MAY NEED RUN<br>'+esc(r.long.join('; '))+'</div>';}if(rev.length)flags+='<div class="flag red">'+rev.map(esc).join('<br>')+'</div>';if(r.absent)flags+='<div class="muted">Not on latest schedule — history retained</div>';let oldDiff=o&&o.fingerprint!==r.fingerprint?'<div class="muted">Previously marked: '+esc(o.qty)+' pcs; '+esc(sizingLabel(o))+'</div>':'';return '<tr'+(r.stock?' class="stock-row"':'')+'>'+(interactive?'<td><input type="checkbox" aria-label="Select '+esc(r.order+' '+r.number)+'" data-key="'+esc(r.key)+'" '+(selection.has(r.key)?'checked':'')+'></td>':'')+'<td><strong>'+esc(r.number)+'</strong><br>'+esc(r.profile)+'<div class="muted">'+esc(r.species)+'</div>'+(r.stock?'<span class="stock-badge">STOCK MATCH</span>':'')+'</td><td>'+esc(r.order)+'<div class="muted">'+esc(r.alreadyRun?'Already Run · MFG report':o?.status||'New')+'</div></td><td>'+esc(r.absent?'—':r.days<0?Math.abs(r.days)+' overdue':r.days)+'</td><td><strong>'+esc(r.qty)+'</strong></td><td>'+esc(sizingLabel(r))+(overrideLabel(r.number)?'<div class="muted"><strong>'+esc(overrideLabel(r.number))+'</strong></div>':'')+oldDiff+flags+'</td><td>'+esc(r.finish)+'<div class="muted">'+esc(o?.markedBy||'')+(o?.markedAt?' · '+esc(new Date(o.markedAt).toLocaleDateString()):'')+'</div></td></tr>';}
+function rowHTML(r,interactive=true){let o=record(r),rev=review(r),flags='';const warning=priorWarning(r);if(warning)flags+='<div class="prior-warning">'+esc(warning)+'</div>';if(r.stock){flags+='<div class="flag stock-callout"><strong>STOCK PROFILE + SPECIES</strong><br>CHECK HARD MAPLE STOCK BEFORE RUNNING</div>';if(r.long?.length)flags+='<div class="flag red">OVER 8′ — VERIFY STOCK LENGTH; MAY NEED RUN<br>'+esc(r.long.join('; '))+'</div>';}if(rev.length)flags+='<div class="flag red">'+rev.map(esc).join('<br>')+'</div>';if(r.absent)flags+='<div class="muted">Not on latest schedule — history retained</div>';let oldDiff=o&&o.fingerprint!==r.fingerprint?'<div class="muted">Previously marked: '+esc(o.qty)+' pcs; '+esc(sizingLabel(o))+'</div>':'';return '<tr'+(r.stock?' class="stock-row"':'')+'>'+(interactive?'<td><input type="checkbox" aria-label="Select '+esc(r.order+' '+r.number)+'" data-key="'+esc(r.key)+'" '+(selection.has(r.key)?'checked':'')+'></td>':'')+'<td><strong>'+esc(r.number)+'</strong><br>'+esc(r.profile)+'<div class="muted">'+esc(r.species)+'</div>'+(r.stock?'<span class="stock-badge">STOCK MATCH</span>':'')+'</td><td>'+esc(r.order)+'<div class="muted">'+esc(r.alreadyRun?'Already Run · MFG report':o?.status||'New')+'</div></td><td>'+esc(r.absent?'—':r.days<0?Math.abs(r.days)+' overdue':r.days)+'</td><td><strong>'+esc(r.qty)+'</strong></td><td>'+esc(sizingLabel(r))+(overrideLabel(r.number)?'<div class="muted"><strong>'+esc(overrideLabel(r.number))+'</strong></div>':'')+oldDiff+flags+'</td><td>'+esc(r.finish)+'<div class="muted">'+esc(o?.markedBy||'')+(o?.markedAt?' · '+esc(new Date(o.markedAt).toLocaleDateString()):'')+'</div></td></tr>';}
 function tableHTML(rows,interactive=true){return '<table><thead><tr>'+(interactive?'<th><input id="selectAll" type="checkbox" aria-label="Select all visible"></th>':'')+'<th>Profile / species</th><th>Order / status</th><th>Workdays due</th><th>Pcs</th><th>Sizing / action</th><th>Finish / marking</th></tr></thead><tbody>'+rows.map(r=>rowHTML(r,interactive)).join('')+'</tbody></table>';}
 const pdfInputs=['schedule','wip'];
 function isPdf(file){
@@ -161,7 +177,7 @@ function updateGenerate(){
   const label=ready?'Both PDFs ready':selected+' of '+pdfInputs.length+' PDFs selected';
   if(readiness.textContent!==label)readiness.textContent=label;
   readiness.classList.toggle('is-ready',ready);
-  $('generate').disabled=!db||!ready||busy();
+  $('generate').disabled=!db||!ready||busy()||!!viewingBatch;
   $('generate').title=ready?'Generate the moulding list':'Choose both PDFs to generate the list';
 }
 for(const id of pdfInputs){
@@ -196,21 +212,33 @@ for(const id of pdfInputs){
   });
 }
 function render(){
-  const enabled=!!db;
+  const enabled=!!db, historical=!!viewingBatch, data=displayState();
   document.body.classList.toggle('tracking-locked',!enabled);
   for(const id of ['schedule','wip','search'])$(id).disabled=!enabled||busy();
   document.querySelectorAll('[data-needs-db], [data-tab]').forEach(e=>e.disabled=!enabled||busy());
-  $('refresh').disabled=busy();
+  $('refresh').disabled=busy()||historical;
+  for(const id of ['schedule','wip','print'])$(id).disabled=!enabled||busy()||historical;
+  $('print').hidden=historical;
+  $('newBatch').disabled=busy()||historical||(!db?.snapshot&&!Object.keys(db?.records??{}).length);
+  $('viewBatches').disabled=busy();
+  $('archiveBanner').hidden=!historical;
+  $('archiveLabel').textContent=historical?'Saved batch · '+batchDate.format(new Date(viewingBatch.savedAt)):'';
+  $('importPanel').hidden=historical;
+  $('workActions').hidden=historical;
   updateGenerate();
   $('initialSetup').hidden=enabled||!setupAvailable;
   for(const id of ['initialTrackingFile','initialImport'])$(id).disabled=busy();
-  $('state').textContent=saving?'Saving changes…':enabled?'Shared tracker':setupAvailable?'First-time setup':'Shared tracker unavailable';
+  const startedAt=db?.activeBatch?.startedAt??db?.snapshot?.importedAt;
+  $('state').textContent=saving?'Saving changes…':startedAt?'Current batch · '+batchDate.format(new Date(startedAt))
+    :enabled?'Shared tracker':setupAvailable?'First-time setup':'Shared tracker unavailable';
   $('operator').textContent=operator;
   const rows=enabled?visibleRows():[];
   const due=currentRows().filter(row=>row.days<=+$('days').value);
   $('metrics').innerHTML='<span><b>'+rows.length+'</b> visible lines</span><span><b>'+rows.reduce((total,row)=>total+row.qty,0)+'</b> pieces</span><span><b>'+due.filter(hidden).length+'</b> already marked / excluded</span>';
-  $('snapshot').textContent=db?.snapshot?'Schedule imported '+new Date(db.snapshot.importedAt).toLocaleString()+' · '+db.snapshot.scheduleCount+' schedule lines. Workdays reflect this upload.':'Upload both PDFs to create the run list.';
-  $('results').innerHTML=rows.length?tableHTML(rows,tab!=='completed'):'<div class="empty">'+(!db?.snapshot?'Choose the two PDFs, then click Generate.':'No lines in this view.')+'</div>';
+  $('snapshot').textContent=historical?(data.reports?.length??0)+' saved moulder reports'
+    :data?.snapshot?'Schedule imported '+batchDate.format(new Date(data.snapshot.importedAt))+' · '+data.snapshot.scheduleCount+' schedule lines'
+    :'Upload both PDFs to create the run list.';
+  $('results').innerHTML=rows.length?tableHTML(rows,!historical&&tab!=='completed'):'<div class="empty">'+(!historical&&!data?.snapshot?'Choose the two PDFs, then click Generate.':'No lines in this view.')+'</div>';
   $('selected').textContent=selection.size+' selected';
   $('apply').hidden=['run','sent','completed'].includes(tab);
   $('pull').hidden=['pull','sent','completed'].includes(tab);
@@ -250,12 +278,19 @@ async function sharedRequest(body, method='PUT', path='/api/state'){
 }
 
 function acceptShared(payload){
+  const newBatch=!!db&&db.activeBatch?.id!==payload.data?.activeBatch?.id;
   setupAvailable=false;
   committed=payload.data;
   db=structuredClone(payload.data);
   revision=payload.revision;
   operator=payload.email;
   $('days').value=6;
+  if(newBatch){
+    if(!viewingBatch){tab='new';$('search').value='';}
+    selection.clear();
+    pendingPrint=null;
+    for(const id of pdfInputs)$(id).value='';
+  }
 }
 
 async function refreshShared(announce=false){
@@ -305,6 +340,59 @@ async function save(success){
 }
 
 $('refresh').onclick=()=>refreshShared(true);
+$('newBatch').onclick=async()=>{
+  if(!db||busy()||viewingBatch||!confirm('Save this batch to history and start a new work list?'))return;
+  saving=true;
+  render();
+  try{
+    acceptShared(await sharedRequest({revision},'POST','/api/batches'));
+    message('Batch saved. Upload both PDFs to start the new work list.');
+  }catch(error){message(error.message,true);}
+  finally{saving=false;render();}
+};
+
+async function openSavedBatch(id){
+  const status=$('batchHistoryStatus');
+  const list=$('batchHistoryList');
+  for(const button of list.querySelectorAll('button'))button.disabled=true;
+  try{
+    const batch=await sharedRequest(null,'GET','/api/batches/'+encodeURIComponent(id));
+    if(!$('batchHistory').open)return;
+    viewingBatch=batch;
+    tab='new';
+    selection.clear();
+    $('search').value='';
+    $('batchHistory').close();
+    message('');
+    render();
+  }catch(error){status.textContent=error.message;}
+  finally{for(const button of list.querySelectorAll('button'))button.disabled=false;}
+}
+
+$('viewBatches').onclick=async()=>{
+  const dialog=$('batchHistory'), status=$('batchHistoryStatus'), list=$('batchHistoryList');
+  list.replaceChildren();
+  status.textContent='Loading saved batches…';
+  if(!dialog.open)dialog.showModal();
+  try{
+    const {batches}=await sharedRequest(null,'GET','/api/batches');
+    status.textContent=batches.length?'':'No saved batches yet.';
+    for(const batch of batches){
+      const button=document.createElement('button');
+      button.type='button';
+      button.textContent=batchDate.format(new Date(batch.savedAt));
+      button.onclick=()=>openSavedBatch(batch.id);
+      list.append(button);
+    }
+  }catch(error){status.textContent=error.message;}
+};
+$('backToBatch').onclick=()=>{
+  viewingBatch=null;
+  tab='new';
+  selection.clear();
+  $('search').value='';
+  render();
+};
 $('initialSetup').onsubmit=async event=>{
   event.preventDefault();
   const file=$('initialTrackingFile').files[0];
@@ -321,7 +409,7 @@ $('initialSetup').onsubmit=async event=>{
   finally{saving=false;render();}
 };
 $('generate').onclick=async()=>{
-  if(!db||busy()||!pdfInputs.every(id=>isPdf($(id).files[0])))return;
+  if(!db||busy()||viewingBatch||!pdfInputs.every(id=>isPdf($(id).files[0])))return;
   const [schedule,wip]=[$('schedule').files[0],$('wip').files[0]];
   generating=true;
   render();
@@ -339,7 +427,7 @@ $('generate').onclick=async()=>{
   finally{generating=false;render();}
 };
 function markRows(rows,status){for(const r of rows){let previous=record(r);const rec={...r,status,markedAt:now(),markedBy:''};delete rec.absent;db.records[r.key]=rec;db.history.push({at:now(),key:r.key,status,previous:previous?structuredClone(previous):null,current:structuredClone(rec)});}}
-async function changeSelected(status){if(busy())return;if(!db||!selection.size){message('Select one or more lines first.',true);return;}const rows=visibleRows().filter(r=>selection.has(r.key));if(rows.some(r=>r.issues.length)&&status!=='New'){message('Resolve PDF matching/quantity issues before marking these lines.',true);return;}if(rows.some(r=>review(r).length)&&!confirm('These lines changed or have another marked variant. Check any earlier moulder request before accepting the current quantity and sizing. Apply '+status+'?'))return;markRows(rows,status);selection.clear();await save(rows.length+' '+(rows.length===1?'line':'lines')+' marked '+status+'.');}
+async function changeSelected(status){if(busy()||viewingBatch)return;if(!db||!selection.size){message('Select one or more lines first.',true);return;}const rows=visibleRows().filter(r=>selection.has(r.key));if(rows.some(r=>r.issues.length)&&status!=='New'){message('Resolve PDF matching/quantity issues before marking these lines.',true);return;}if(rows.some(r=>review(r).length)&&!confirm('These lines changed or have another marked variant. Check any earlier moulder request before accepting the current quantity and sizing. Apply '+status+'?'))return;markRows(rows,status);selection.clear();await save(rows.length+' '+(rows.length===1?'line':'lines')+' marked '+status+'.');}
 function archiveMissing(rows){const live=new Set(rows.map(r=>r.key));db.archivedRecords??={};for(const [key,r] of Object.entries(db.records)){if(!live.has(key)){db.archivedRecords[key]=structuredClone(r);db.history.push({at:now(),key,event:'Removed from MFG schedule',previous:structuredClone(r),current:null});delete db.records[key];}}}
 $('apply').onclick=()=>changeSelected('To Run');$('pull').onclick=()=>changeSelected('To Pull');$('reset').onclick=()=>{if(tab==='sent'&&!confirm('Move this work back to New? Selecting it To Run again will create another moulder request.'))return;changeSelected('New');};
 function finishReport(){if(!pendingPrint)return;$('reportDoneDetail').textContent=pendingPrint.rows.length+' lines in report '+pendingPrint.id;$('reportDoneDetail').textContent+=' · Check all grouped order pages and profile drawings, including any manual-drawing reminders.';if(!$('reportDone').open)$('reportDone').showModal();}
@@ -390,7 +478,7 @@ function prepareReport(rows){
 }
 
 $('print').onclick=async()=>{
-  if(!db||busy())return;
+  if(!db||busy()||viewingBatch)return;
   printing=true;
   pendingPrint=null;
   tab='run';
@@ -438,4 +526,5 @@ window.addEventListener('beforeunload',event=>{
 window.addEventListener('focus',()=>refreshShared());
 setInterval(()=>{if(document.visibilityState==='visible')refreshShared();},30000);
 refreshShared();
+
 

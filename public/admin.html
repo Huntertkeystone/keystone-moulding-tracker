@@ -8,32 +8,32 @@
   <style>
     * { box-sizing: border-box; }
     :root { color-scheme: light; }
-    body { margin: 0; background: #f3f5f1; color: #212923; font: 14px/1.5 system-ui, sans-serif; }
-    header { background: #202d25; color: white; padding-block: 23px; }
+    body { margin: 0; background: #f4f6f9; color: #151d2b; font: 14px/1.5 system-ui, sans-serif; }
+    header { background: #fff; border-bottom: 1px solid #dce2ea; padding-block: 21px; }
     .shell { width: min(100% - 32px, 900px); margin-inline: auto; }
-    header p { margin: 0; color: #b9cbbd; font-weight: 650; font-size: .82rem; }
+    header p { margin: 0; color: #526076; font-weight: 650; font-size: .82rem; }
     h1 { margin: 2px 0 0; font-size: clamp(1.65rem, 4vw, 2rem); letter-spacing: -.04em; }
     h2 { margin: 0 0 10px; font-size: 1.05rem; }
     main { padding-block: 18px 35px; }
-    .panel { border: 1px solid #dfe4de; border-radius: 14px; background: white; padding: 18px; margin-bottom: 14px; }
-    .muted { color: #56625a; }
+    .panel { border: 1px solid #dce2ea; border-radius: 14px; background: white; padding: 18px; margin-bottom: 14px; }
+    .muted { color: #526076; }
     label { display: block; font-weight: 650; margin-bottom: 5px; }
-    input, button { font: inherit; border: 1px solid #c4cec5; border-radius: 7px; min-height: 40px; padding: 8px 10px; color: inherit; background: white; }
+    input, button { font: inherit; border: 1px solid #cfd7e2; border-radius: 7px; min-height: 40px; padding: 8px 10px; color: inherit; background: white; }
     input { width: 100%; }
     button { font-weight: 650; cursor: pointer; }
-    button:hover:not(:disabled) { background: #eef3ed; }
+    button:hover:not(:disabled) { background: #f7f8fa; }
     button:disabled { opacity: .55; cursor: not-allowed; }
-    .primary { background: #24533e; border-color: #24533e; color: white; }
-    .primary:hover:not(:disabled) { background: #173c2c; }
-    :focus-visible { outline: 3px solid #3c8461; outline-offset: 3px; }
+    .primary { background: #315bd5; border-color: #315bd5; color: white; }
+    .primary:hover:not(:disabled) { background: #2347b1; }
+    :focus-visible { outline: 3px solid #315bd5; outline-offset: 3px; }
     .fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 13px; }
     small { display: block; margin-top: 4px; }
-    #message { min-height: 20px; margin: 9px 0 0; color: #315041; }
+    #message { min-height: 20px; margin: 9px 0 0; color: #37455c; }
     #message.error { color: #8f322a; }
     .table-wrap { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { padding: 8px 9px; border-bottom: 1px solid #e6ebe5; text-align: left; white-space: nowrap; }
-    th { color: #56625a; background: #f5f7f3; }
+    th, td { padding: 8px 9px; border-bottom: 1px solid #e5eaf1; text-align: left; white-space: nowrap; }
+    th { color: #526076; background: #f0f3f7; }
     .row-actions { display: flex; justify-content: end; gap: 5px; }
     .row-actions button { min-height: 34px; padding: 5px 9px; }
     @media (max-width: 560px) { .fields { grid-template-columns: 1fr; } }
@@ -177,3 +177,4 @@
   </script>
 </body>
 </html>
+

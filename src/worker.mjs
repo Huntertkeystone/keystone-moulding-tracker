@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { MAX_BYTES, initializeState, prepareUpdate, readState, validateTracker, writeState } from './state.mjs';
+import { MAX_BYTES, initializeState, prepareUpdate, readBatches, readState, startBatch, validateTracker, writeState } from './state.mjs';
 
 const signingKeys = new Map();
 
@@ -35,6 +35,38 @@ function canInitialize(env, email) {
 function sameOriginJson(request, url) {
   return request.headers.get('Origin') === url.origin
     && request.headers.get('Content-Type')?.split(';')[0] === 'application/json';
+}
+
+async function batchesRequest(request, env, email, url) {
+  const id = url.pathname.startsWith('/api/batches/') ? url.pathname.slice('/api/batches/'.length) : null;
+  if (id !== null && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) {
+    return response({ error: 'Batch not found.' }, 404);
+  }
+  if (request.method === 'GET') {
+    const result = await readBatches(env.DB, id);
+    if (!id) return response({ batches: result });
+    return result ? response(result) : response({ error: 'Batch not found.' }, 404);
+  }
+  if (id || request.method !== 'POST') return response({ error: 'Method not allowed.' }, 405);
+  if (!sameOriginJson(request, url)) return response({ error: 'Expected a same-origin JSON request.' }, 403);
+  let input;
+  try {
+    input = await request.json();
+    if (!Number.isSafeInteger(input?.revision)) throw new Error();
+  } catch {
+    return response({ error: 'Invalid batch request.' }, 400);
+  }
+  const current = await readState(env.DB);
+  if (!current) return response({ error: 'Import tracking data before starting a batch.' }, 503);
+  const conflict = () => response({ error: 'The current batch changed. Refresh the tracker before starting a new batch.' }, 409);
+  if (input.revision !== current.revision) return conflict();
+  if (!current.data.snapshot && !Object.keys(current.data.records).length) {
+    return response({ error: 'The current batch has no schedule to save.' }, 400);
+  }
+  const { data, update, archive } = startBatch(current.data);
+  return await writeState(env.DB, current.revision, update, email, archive)
+    ? response({ revision: current.revision + 1, data, email }, 201)
+    : conflict();
 }
 
 async function overridesRequest(request, env, email, url) {
@@ -132,9 +164,10 @@ async function stateRequest(request, env, email, url) {
   let update;
   try {
     if (input.data && typeof input.data === 'object') {
-      // Override configuration changes are accepted only through the admin endpoint.
-      if (current.data.mouldingOverrides) input.data.mouldingOverrides = current.data.mouldingOverrides;
-      else delete input.data.mouldingOverrides;
+      for (const field of ['mouldingOverrides', 'activeBatch', 'priorScheduled']) {
+        if (Object.hasOwn(current.data, field)) input.data[field] = current.data[field];
+        else delete input.data[field];
+      }
     }
     update = prepareUpdate(input.data, current.data, email);
   } catch (error) {
@@ -158,6 +191,7 @@ export default {
         return new Response('Moulding admin access is required.', { status: 403, headers: { 'Cache-Control': 'no-store' } });
       }
       if (url.pathname === '/api/admin/overrides') return await overridesRequest(request, env, email, url);
+      if (url.pathname === '/api/batches' || url.pathname.startsWith('/api/batches/')) return await batchesRequest(request, env, email, url);
       if (url.pathname === '/api/state') return await stateRequest(request, env, email, url);
       if (url.pathname === '/api/setup') return await setupRequest(request, env, email, url);
       if (url.pathname.startsWith('/api/')) return response({ error: 'Not found.' }, 404);
@@ -175,4 +209,5 @@ export default {
     }
   }
 };
+
 

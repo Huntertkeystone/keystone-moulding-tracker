@@ -123,7 +123,7 @@ export function prepareUpdate(data, previous, email) {
   return { timestamp, chunks: splitState(data) };
 }
 
-export async function writeState(db, revision, update, email) {
+export async function writeState(db, revision, update, email, archive) {
   const writeId = crypto.randomUUID();
   const next = revision + 1;
   // The write ID ties every statement to the update that won the revision check.
@@ -145,6 +145,64 @@ export async function writeState(db, revision, update, email) {
     `DELETE FROM tracker_chunks WHERE revision = ?
      AND EXISTS (SELECT 1 FROM tracker_revision WHERE id = 1 AND write_id = ?)`
   ).bind(revision, writeId));
+  if (archive) {
+    batch.push(db.prepare(`CREATE TABLE IF NOT EXISTS tracker_batches (
+      id TEXT NOT NULL, position INTEGER NOT NULL, started_at TEXT NOT NULL,
+      saved_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (id, position)
+    )`));
+    for (const [position, body] of archive.chunks.entries()) {
+      batch.push(db.prepare(
+        `INSERT INTO tracker_batches (id, position, started_at, saved_at, body)
+         SELECT ?, ?, ?, ?, ? WHERE EXISTS
+         (SELECT 1 FROM tracker_revision WHERE id = 1 AND write_id = ?)`
+      ).bind(archive.id, position, archive.startedAt, archive.savedAt, body, writeId));
+    }
+  }
   const [result] = await db.batch(batch);
   return result.meta.changes === 1;
 }
+
+export async function readBatches(db, id) {
+  let results;
+  try {
+    const query = id
+      ? db.prepare(`SELECT id, position, started_at AS startedAt, saved_at AS savedAt, body
+                    FROM tracker_batches WHERE id = ? ORDER BY position`).bind(id)
+      : db.prepare(`SELECT id, started_at AS startedAt, saved_at AS savedAt
+                    FROM tracker_batches WHERE position = 0 ORDER BY saved_at DESC`);
+    ({ results } = await query.all());
+  } catch (error) {
+    if (/no such table: tracker_batches\b/i.test(error.message)) return id ? null : [];
+    throw error;
+  }
+  if (!id) return results;
+  if (!results.length) return null;
+  if (results.some((row, index) => row.position !== index)) throw new Error('Saved batch is incomplete.');
+  const { id: batchId, startedAt, savedAt } = results[0];
+  return { id: batchId, startedAt, savedAt, data: JSON.parse(results.map(row => row.body).join('')) };
+}
+
+export function startBatch(data) {
+  const timestamp = new Date().toISOString();
+  const priorScheduled = { ...data.priorScheduled };
+  for (const row of [...Object.values(data.archivedRecords ?? {}), ...Object.values(data.records)]) {
+    if (!['To Pull', 'To Run', 'Sent to Moulder'].includes(row.status)) continue;
+    const key = row.order + '|' + row.number;
+    const markedAt = Number.isFinite(Date.parse(row.markedAt)) ? new Date(row.markedAt).toISOString() : timestamp;
+    if (!priorScheduled[key] || priorScheduled[key][1] <= markedAt) priorScheduled[key] = [row.status, markedAt];
+  }
+  const { priorScheduled: _prior, ...saved } = data;
+  const archive = {
+    id: data.activeBatch?.id ?? crypto.randomUUID(),
+    startedAt: data.activeBatch?.startedAt ?? data.snapshot?.importedAt ?? timestamp,
+    savedAt: timestamp,
+    chunks: splitState(saved, 250_000)
+  };
+  const next = {
+    ...data, activeBatch: { id: crypto.randomUUID(), startedAt: timestamp }, priorScheduled,
+    records: {}, archivedRecords: {}, snapshot: null, history: [], reports: [],
+    pendingRunReport: null, savedAt: timestamp
+  };
+  return { data: next, update: { timestamp, chunks: splitState(next, 250_000) }, archive };
+}
+

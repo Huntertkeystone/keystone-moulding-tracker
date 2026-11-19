@@ -460,13 +460,13 @@ async function loadDrawings(rows){
 function drawingsFor(number){return profileDrawings.get(number)||[];}
 const STOCK_RUN_QTY=Object.freeze({'7001':50,'7076':50,'1003':50,'1020':50,'5004':30,'5005':30,'5008':30,'5010':30,'5023':30,'5007':30,'6005':30,'6022':30,'8055':50,'8064':50,'8069':50,'8070':50,'5024':50,'5001':50,'8001':40});
 function stockRunPlan(rows){const grouped=new Map();for(const r of rows){if(!stock(r)||!STOCK_RUN_QTY[r.number])continue;if(!grouped.has(r.number))grouped.set(r.number,[]);grouped.get(r.number).push(r);}return Array.from(grouped,([number,items])=>{const orderedQty=items.reduce((n,r)=>n+r.qty,0),runQty=Math.max(orderedQty,STOCK_RUN_QTY[number]);return {number,orderedQty,runQty,extraQty:runQty-orderedQty,items};}).sort((a,b)=>a.number.localeCompare(b.number,undefined,{numeric:true}));}
-function packetReport(rows,id,savedReport){
+function packetReport(rows,id,savedReport,overrides=displayState()?.mouldingOverrides){
  const stockPlan=savedReport?.stockRuns??stockRunPlan(rows);const grouped=new Map();for(const r of rows){const key=String(r.number);if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(r);}
  const groups=Array.from(grouped.entries()).sort((a,b)=>a[0].localeCompare(b[0],undefined,{numeric:true}));let sheets=[];
  for(const [i,[number,items]] of groups.entries()){
   items.sort((a,b)=>a.species.localeCompare(b.species)||a.order.localeCompare(b.order)||a.key.localeCompare(b.key));
   const stockBatch=stockPlan.find(g=>g.number===number),orderedTotal=items.reduce((n,r)=>n+r.qty,0),drawings=drawingsFor(number).slice(0,1),total=orderedTotal+(stockBatch?.extraQty||0),profileNames=Array.from(new Set(items.map(r=>r.profile))).join(' / ');
-  const settings=overrideLabel(number,savedReport?(savedReport.mouldingOverrides??{}):displayState()?.mouldingOverrides);
+  const settings=overrideLabel(number,overrides);
   const header='<div class="packet-top">KEYSTONE WOOD SPECIALTIES · MOULDER REQUEST</div><div class="group-heading"><div><h1>Moulding '+esc(number)+'</h1><h2>'+esc(profileNames)+'</h2></div><div class="group-total"><strong>'+esc(total)+'</strong><span>pieces to run</span></div></div>'+(settings?'<p class="run-settings">'+esc(settings)+'</p>':'')+(stockBatch?'<div class="stock-batch-banner"><strong>HARD MAPLE STOCK RUN: '+esc(stockBatch.runQty)+' PIECES</strong>'+(items.some(r=>!stock(r))?'<div>Other species: '+esc(items.filter(r=>!stock(r)).reduce((n,r)=>n+r.qty,0))+' pieces, as listed below.</div>':'')+'</div>':'');
   const orderItems=stockBatch?items.filter(r=>!stock(r)):items;
   const body=orderItems.map(r=>{const rev=review(r),flags=[];if(r.stock&&r.long?.length)flags.push('<span class="urgent-label">OVER 8′ — VERIFY STOCK LENGTH</span>');for(const issue of rev)flags.push('<span class="urgent-label">'+esc(issue)+'</span>');return '<tr'+(r.stock?' class="stock-order"':'')+'><td class="order-number">'+esc(r.order)+'<small>'+esc(r.days<0?Math.abs(r.days)+' workdays overdue':r.days+' workdays until due')+'</small></td><td class="qty">'+esc(r.qty)+'</td><td class="sizing">'+esc(sizingLabel(r))+flags.join('')+'</td><td>'+esc(r.species)+'</td><td>'+esc(r.finish||'Not specified')+'</td></tr>';}).join('');
@@ -549,13 +549,15 @@ async function reprintSent(key){
   render();
   let frame;
   try{
+    const {data}=await sharedRequest();
+    if(!data)throw Error('The current moulding overrides could not be loaded.');
     await loadDrawings(packet.rows);
     frame=document.createElement('iframe');
     frame.style.cssText='position:fixed;width:0;height:0;border:0';
     await new Promise((resolve,reject)=>{
       frame.onload=resolve;
       frame.onerror=reject;
-      frame.srcdoc=packetReport(packet.rows,packet.savedReport?.id??'Reprint',packet.savedReport);
+      frame.srcdoc=packetReport(packet.rows,packet.savedReport?.id??'Reprint',packet.savedReport,data.mouldingOverrides??{});
       document.body.append(frame);
     });
     await Promise.all(Array.from(frame.contentDocument.images,img=>img.decode()));
@@ -574,6 +576,7 @@ window.addEventListener('beforeunload',event=>{
 window.addEventListener('focus',()=>refreshShared());
 setInterval(()=>{if(document.visibilityState==='visible')refreshShared();},30000);
 refreshShared();
+
 
 
 

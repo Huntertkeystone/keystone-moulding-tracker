@@ -7,6 +7,11 @@ const tabStatus={run:'To Run',pull:'To Pull',sent:'Sent to Moulder'};
 let db=null, committed=null, revision=0, operator='', tab='new', selection=new Set();
 let generating=false, saving=false, refreshing=false, printing=false, pendingPrint=null;
 let setupAvailable=false, viewingBatch=null;
+let loadedImport=null;
+function hasLoadedSchedule(){
+  return !!loadedImport&&db?.snapshot?.importedAt===loadedImport.at
+    &&pdfInputs.every((id,index)=>$(id).files[0]===loadedImport.files[index]);
+}
 const displayState=()=>viewingBatch?.data??db;
 const batchDate=new Intl.DateTimeFormat('en-US',{dateStyle:'medium',timeStyle:'short',timeZone:'America/New_York'});
 const activityDate=new Intl.DateTimeFormat('en-US',{dateStyle:'medium',timeZone:'America/New_York'});
@@ -129,7 +134,7 @@ function review(r){let list=[...r.issues],old=record(r),data=displayState();if(o
 function hidden(r){if(r.alreadyRun)return true;let o=record(r);return o&&o.status!=='New'&&o.fingerprint===r.fingerprint&&!review(r).length;}
 function currentRows(){
   const data=displayState(), rows=data?.snapshot?.rows??[];
-  if(!viewingBatch)return rows;
+  if(!viewingBatch)return hasLoadedSchedule()?rows:[];
   const keys=new Set(rows.map(row=>row.key));
   return [...rows,...Object.values({...data.archivedRecords,...data.records})
     .filter(row=>!keys.has(row.key)).map(row=>({...row,absent:true}))];
@@ -153,8 +158,8 @@ function formatRunWidth(widthInches){
   return (whole?whole+' ':'')+numerator+'/'+denominator;
 }
 
-function overrideLabel(number){
-  const override=displayState()?.mouldingOverrides?.[number];
+function overrideLabel(number, overrides=displayState()?.mouldingOverrides){
+  const override=overrides?.[number];
   if(!override)return '';
   const labels=[];
   if(override.widthInches>0)labels.push('Run width '+formatRunWidth(override.widthInches)+'″');
@@ -162,7 +167,7 @@ function overrideLabel(number){
   return labels.join(' · ');
 }
 
-function rowHTML(r,interactive=true){let o=record(r),rev=review(r),flags='';const warning=priorWarning(r);if(warning)flags+='<div class="prior-warning">'+esc(warning)+'</div>';if(r.stock){flags+='<div class="flag stock-callout"><strong>STOCK PROFILE + SPECIES</strong><br>CHECK HARD MAPLE STOCK BEFORE RUNNING</div>';if(r.long?.length)flags+='<div class="flag red">OVER 8′ — VERIFY STOCK LENGTH; MAY NEED RUN<br>'+esc(r.long.join('; '))+'</div>';}if(rev.length)flags+='<div class="flag red">'+rev.map(esc).join('<br>')+'</div>';if(r.absent)flags+='<div class="muted">Not on latest schedule — history retained</div>';let oldDiff=o&&o.fingerprint!==r.fingerprint?'<div class="muted">Previously marked: '+esc(o.qty)+' pcs; '+esc(sizingLabel(o))+'</div>':'';return '<tr'+(r.stock?' class="stock-row"':'')+'>'+(interactive?'<td><input type="checkbox" aria-label="Select '+esc(r.order+' '+r.number)+'" data-key="'+esc(r.key)+'" '+(selection.has(r.key)?'checked':'')+'></td>':'')+'<td><strong>'+esc(r.number)+'</strong><br>'+esc(r.profile)+'<div class="muted">'+esc(r.species)+'</div>'+(r.stock?'<span class="stock-badge">STOCK MATCH</span>':'')+'</td><td>'+esc(r.order)+'<div class="muted">'+esc(r.alreadyRun?'Already Run · MFG report':o?.status||'New')+'</div></td><td>'+esc(r.absent?'—':r.days<0?Math.abs(r.days)+' overdue':r.days)+'</td><td><strong>'+esc(r.qty)+'</strong></td><td>'+esc(sizingLabel(r))+(overrideLabel(r.number)?'<div class="muted"><strong>'+esc(overrideLabel(r.number))+'</strong></div>':'')+oldDiff+flags+'</td><td>'+esc(r.finish)+'<div class="muted">'+esc(o?.markedBy||'')+(o?.markedAt?' · '+esc(new Date(o.markedAt).toLocaleDateString()):'')+'</div></td></tr>';}
+function rowHTML(r,interactive=true){let o=record(r),rev=review(r),flags='';const warning=priorWarning(r);if(warning)flags+='<div class="prior-warning">'+esc(warning)+'</div>';if(r.stock){flags+='<div class="flag stock-callout"><strong>STOCK PROFILE + SPECIES</strong><br>CHECK HARD MAPLE STOCK BEFORE RUNNING</div>';if(r.long?.length)flags+='<div class="flag red">OVER 8′ — VERIFY STOCK LENGTH; MAY NEED RUN<br>'+esc(r.long.join('; '))+'</div>';}if(rev.length)flags+='<div class="flag red">'+rev.map(esc).join('<br>')+'</div>';if(r.absent)flags+='<div class="muted">Not on latest schedule — history retained</div>';let oldDiff=o&&o.fingerprint!==r.fingerprint?'<div class="muted">Previously marked: '+esc(o.qty)+' pcs; '+esc(sizingLabel(o))+'</div>':'';return '<tr'+(r.stock?' class="stock-row"':'')+'>'+(interactive?'<td><input type="checkbox" aria-label="Select '+esc(r.order+' '+r.number)+'" data-key="'+esc(r.key)+'" '+(selection.has(r.key)?'checked':'')+'></td>':'')+'<td><strong>'+esc(r.number)+'</strong>'+(tab==='sent'?'<button type="button" data-reprint-key="'+esc(r.key)+'" aria-label="Print moulding '+esc(r.number)+'" style="margin-inline-start:8px;min-height:24px;padding:2px 7px;font-size:12px" '+(busy()?'disabled':'')+'>Print</button>':'')+'<br>'+esc(r.profile)+'<div class="muted">'+esc(r.species)+'</div>'+(r.stock?'<span class="stock-badge">STOCK MATCH</span>':'')+'</td><td>'+esc(r.order)+'<div class="muted">'+esc(r.alreadyRun?'Already Run · MFG report':o?.status||'New')+'</div></td><td>'+esc(r.absent?'—':r.days<0?Math.abs(r.days)+' overdue':r.days)+'</td><td><strong>'+esc(r.qty)+'</strong></td><td>'+esc(sizingLabel(r))+(overrideLabel(r.number)?'<div class="muted"><strong>'+esc(overrideLabel(r.number))+'</strong></div>':'')+oldDiff+flags+'</td><td>'+esc(r.finish)+'<div class="muted">'+esc(o?.markedBy||'')+(o?.markedAt?' · '+esc(new Date(o.markedAt).toLocaleDateString()):'')+'</div></td></tr>';}
 function tableHTML(rows,interactive=true){return '<table><thead><tr>'+(interactive?'<th><input id="selectAll" type="checkbox" aria-label="Select all visible"></th>':'')+'<th>Profile / species</th><th>Order / status</th><th>Workdays due</th><th>Pcs</th><th>Sizing / action</th><th>Finish / marking</th></tr></thead><tbody>'+rows.map(r=>rowHTML(r,interactive)).join('')+'</tbody></table>';}
 const pdfInputs=['schedule','wip'];
 function isPdf(file){
@@ -191,7 +196,7 @@ for(const id of pdfInputs){
       input.value='';
       message('Choose a PDF for this report.',true);
     }
-    updateGenerate();
+    render();
   });
   drop.addEventListener('dragover',event=>{
     event.preventDefault();
@@ -211,7 +216,7 @@ for(const id of pdfInputs){
       return;
     }
     input.files=files;
-    updateGenerate();
+    render();
     message('');
   });
 }
@@ -221,13 +226,13 @@ function render(){
   for(const id of ['schedule','wip','search'])$(id).disabled=!enabled||busy();
   document.querySelectorAll('[data-needs-db], [data-tab]').forEach(e=>e.disabled=!enabled||busy());
   for(const id of ['schedule','wip','print'])$(id).disabled=!enabled||busy()||historical;
-  $('print').hidden=historical;
+  $('print').hidden=historical||!hasLoadedSchedule();
   $('newBatch').disabled=busy()||historical||(!db?.snapshot&&!Object.keys(db?.records??{}).length);
   $('viewBatches').disabled=busy();
   $('archiveBanner').hidden=!historical;
   $('archiveLabel').textContent=historical?batchLabel(viewingBatch):'';
   $('importPanel').hidden=historical;
-  $('workActions').hidden=historical;
+  $('workActions').hidden=historical||!hasLoadedSchedule();
   updateGenerate();
   $('initialSetup').hidden=enabled||!setupAvailable;
   for(const id of ['initialTrackingFile','initialImport'])$(id).disabled=busy();
@@ -239,9 +244,12 @@ function render(){
   const due=currentRows().filter(row=>row.days<=+$('days').value);
   $('metrics').innerHTML='<span><b>'+rows.length+'</b> visible lines</span><span><b>'+rows.reduce((total,row)=>total+row.qty,0)+'</b> pieces</span><span><b>'+due.filter(hidden).length+'</b> already marked / excluded</span>';
   $('snapshot').textContent=historical?(data.reports?.length??0)+' saved moulder reports'
-    :data?.snapshot?'Schedule imported '+batchDate.format(new Date(data.snapshot.importedAt))+' · '+data.snapshot.scheduleCount+' schedule lines'
+    :hasLoadedSchedule()?'Schedule imported '+batchDate.format(new Date(data.snapshot.importedAt))+' · '+data.snapshot.scheduleCount+' schedule lines'
     :'Upload both PDFs to create the run list.';
-  $('results').innerHTML=rows.length?tableHTML(rows,!historical&&tab!=='completed'):'<div class="empty">'+(!historical&&!data?.snapshot?'Choose the two PDFs, then click Generate.':'No lines in this view.')+'</div>';
+  $('results').innerHTML=rows.length?tableHTML(rows,!historical&&tab!=='completed'):'<div class="empty">'+(!historical&&!hasLoadedSchedule()?'Choose the two PDFs, then click Generate.':'No lines in this view.')+'</div>';
+  for(const button of document.querySelectorAll('[data-reprint-key]')){
+    button.onclick=()=>reprintSent(button.dataset.reprintKey);
+  }
   $('selected').textContent=selection.size+' selected';
   $('apply').hidden=['run','sent','completed'].includes(tab);
   $('pull').hidden=['pull','sent','completed'].includes(tab);
@@ -327,6 +335,7 @@ async function save(success){
   try{
     acceptShared(await sharedRequest({revision,data:db}));
     message(success);
+    return true;
   }catch(error){
     db=structuredClone(committed);
     try{
@@ -424,7 +433,7 @@ $('generate').onclick=async()=>{
     tab='new';
     pendingPrint=null;
     const count=parsed.rows.filter(row=>row.alreadyRun).length;
-    await save(count?'Schedule saved. '+count+' crossed-off '+(count===1?'line is':'lines are')+' in Already Run.':'Schedule saved.');
+    if(await save(count?'Schedule saved. '+count+' crossed-off '+(count===1?'line is':'lines are')+' in Already Run.':'Schedule saved.'))loadedImport={at:db.snapshot.importedAt,files:[schedule,wip]};
   }catch(error){message(error.message,true);}
   finally{generating=false;render();}
 };
@@ -451,13 +460,13 @@ async function loadDrawings(rows){
 function drawingsFor(number){return profileDrawings.get(number)||[];}
 const STOCK_RUN_QTY=Object.freeze({'7001':50,'7076':50,'1003':50,'1020':50,'5004':30,'5005':30,'5008':30,'5010':30,'5023':30,'5007':30,'6005':30,'6022':30,'8055':50,'8064':50,'8069':50,'8070':50,'5024':50,'5001':50,'8001':40});
 function stockRunPlan(rows){const grouped=new Map();for(const r of rows){if(!stock(r)||!STOCK_RUN_QTY[r.number])continue;if(!grouped.has(r.number))grouped.set(r.number,[]);grouped.get(r.number).push(r);}return Array.from(grouped,([number,items])=>{const orderedQty=items.reduce((n,r)=>n+r.qty,0),runQty=Math.max(orderedQty,STOCK_RUN_QTY[number]);return {number,orderedQty,runQty,extraQty:runQty-orderedQty,items};}).sort((a,b)=>a.number.localeCompare(b.number,undefined,{numeric:true}));}
-function packetReport(rows,id){
- const stockPlan=stockRunPlan(rows);const grouped=new Map();for(const r of rows){const key=String(r.number);if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(r);}
+function packetReport(rows,id,savedReport){
+ const stockPlan=savedReport?.stockRuns??stockRunPlan(rows);const grouped=new Map();for(const r of rows){const key=String(r.number);if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(r);}
  const groups=Array.from(grouped.entries()).sort((a,b)=>a[0].localeCompare(b[0],undefined,{numeric:true}));let sheets=[];
  for(const [i,[number,items]] of groups.entries()){
   items.sort((a,b)=>a.species.localeCompare(b.species)||a.order.localeCompare(b.order)||a.key.localeCompare(b.key));
   const stockBatch=stockPlan.find(g=>g.number===number),orderedTotal=items.reduce((n,r)=>n+r.qty,0),drawings=drawingsFor(number).slice(0,1),total=orderedTotal+(stockBatch?.extraQty||0),profileNames=Array.from(new Set(items.map(r=>r.profile))).join(' / ');
-  const settings=overrideLabel(number);
+  const settings=overrideLabel(number,savedReport?(savedReport.mouldingOverrides??{}):displayState()?.mouldingOverrides);
   const header='<div class="packet-top">KEYSTONE WOOD SPECIALTIES · MOULDER REQUEST</div><div class="group-heading"><div><h1>Moulding '+esc(number)+'</h1><h2>'+esc(profileNames)+'</h2></div><div class="group-total"><strong>'+esc(total)+'</strong><span>pieces to run</span></div></div>'+(settings?'<p class="run-settings">'+esc(settings)+'</p>':'')+(stockBatch?'<div class="stock-batch-banner"><strong>HARD MAPLE STOCK RUN: '+esc(stockBatch.runQty)+' PIECES</strong>'+(items.some(r=>!stock(r))?'<div>Other species: '+esc(items.filter(r=>!stock(r)).reduce((n,r)=>n+r.qty,0))+' pieces, as listed below.</div>':'')+'</div>':'');
   const orderItems=stockBatch?items.filter(r=>!stock(r)):items;
   const body=orderItems.map(r=>{const rev=review(r),flags=[];if(r.stock&&r.long?.length)flags.push('<span class="urgent-label">OVER 8′ — VERIFY STOCK LENGTH</span>');for(const issue of rev)flags.push('<span class="urgent-label">'+esc(issue)+'</span>');return '<tr'+(r.stock?' class="stock-order"':'')+'><td class="order-number">'+esc(r.order)+'<small>'+esc(r.days<0?Math.abs(r.days)+' workdays overdue':r.days+' workdays until due')+'</small></td><td class="qty">'+esc(r.qty)+'</td><td class="sizing">'+esc(sizingLabel(r))+flags.join('')+'</td><td>'+esc(r.species)+'</td><td>'+esc(r.finish||'Not specified')+'</td></tr>';}).join('');
@@ -480,7 +489,7 @@ function prepareReport(rows){
 }
 
 $('print').onclick=async()=>{
-  if(!db||busy()||viewingBatch)return;
+  if(!db||busy()||viewingBatch||!hasLoadedSchedule())return;
   printing=true;
   pendingPrint=null;
   tab='run';
@@ -522,12 +531,50 @@ $('print').onclick=async()=>{
   }finally{printing=false;render();}
 };
 
+function sentPacket(key){
+  const rows=currentRows();
+  const row=rows.find(item=>item.key===key && record(item)?.status==='Sent to Moulder');
+  if(!row)return null;
+  const originalKey=key.replace(/\|Sent to Moulder$/,'');
+  const savedReport=(displayState()?.reports??[]).findLast(report=>
+    report.rows?.some(item=>item.key===originalKey));
+  const matching=savedReport?.rows??rows.filter(item=>record(item)?.status==='Sent to Moulder');
+  return { rows:matching.filter(item=>item.number===row.number), savedReport };
+}
+async function reprintSent(key){
+  if(busy()||tab!=='sent')return;
+  const packet=sentPacket(key);
+  if(!packet?.rows.length)return;
+  printing=true;
+  render();
+  let frame;
+  try{
+    await loadDrawings(packet.rows);
+    frame=document.createElement('iframe');
+    frame.style.cssText='position:fixed;width:0;height:0;border:0';
+    await new Promise((resolve,reject)=>{
+      frame.onload=resolve;
+      frame.onerror=reject;
+      frame.srcdoc=packetReport(packet.rows,packet.savedReport?.id??'Reprint',packet.savedReport);
+      document.body.append(frame);
+    });
+    await Promise.all(Array.from(frame.contentDocument.images,img=>img.decode()));
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+    setTimeout(()=>frame.remove(),60000);
+  }catch(error){
+    frame?.remove();
+    message('Could not reprint moulding. '+(error.message||''),true);
+  }finally{printing=false;render();}
+}
+
 window.addEventListener('beforeunload',event=>{
   if(saving){event.preventDefault();event.returnValue='';}
 });
 window.addEventListener('focus',()=>refreshShared());
 setInterval(()=>{if(document.visibilityState==='visible')refreshShared();},30000);
 refreshShared();
+
 
 
 

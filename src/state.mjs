@@ -162,6 +162,10 @@ export async function writeState(db, revision, update, email, archive) {
       id TEXT NOT NULL, position INTEGER NOT NULL, started_at TEXT NOT NULL,
       saved_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (id, position)
     )`));
+    batch.push(db.prepare(
+      `DELETE FROM tracker_batches WHERE id = ?
+       AND EXISTS (SELECT 1 FROM tracker_revision WHERE id = 1 AND write_id = ?)`
+    ).bind(archive.id, writeId));
     for (const [position, body] of archive.chunks.entries()) {
       batch.push(db.prepare(
         `INSERT INTO tracker_batches (id, position, started_at, saved_at, body)
@@ -172,6 +176,16 @@ export async function writeState(db, revision, update, email, archive) {
   }
   const [result] = await db.batch(batch);
   return result.meta.changes === 1;
+}
+
+export function archiveBatch(data, savedAt = new Date().toISOString()) {
+  const { priorScheduled: _prior, sentKeys: _sentKeys, alreadyRunKeys: _alreadyRunKeys, ...saved } = data;
+  return {
+    id: data.activeBatch?.id ?? crypto.randomUUID(),
+    startedAt: data.activeBatch?.startedAt ?? data.snapshot?.importedAt ?? savedAt,
+    savedAt,
+    chunks: splitState(saved, 250_000)
+  };
 }
 
 export async function readBatches(db, id) {
@@ -301,13 +315,7 @@ export function startBatch(data) {
       priorScheduled[match[1] + '|' + match[2]] = ['Sent to Moulder', timestamp];
     }
   }
-  const { priorScheduled: _prior, sentKeys: _sentKeys, alreadyRunKeys: _alreadyRunKeys, ...saved } = data;
-  const archive = {
-    id: data.activeBatch?.id ?? crypto.randomUUID(),
-    startedAt: data.activeBatch?.startedAt ?? data.snapshot?.importedAt ?? timestamp,
-    savedAt: timestamp,
-    chunks: splitState(saved, 250_000)
-  };
+  const archive = archiveBatch(data, timestamp);
   const next = {
     ...data, activeBatch: { id: crypto.randomUUID(), startedAt: timestamp }, priorScheduled,
     sentKeys: undefined,

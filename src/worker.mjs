@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { MAX_BYTES, initializeState, prepareUpdate, readBatchHistory, readState, startBatch, validateTracker, writeState } from './state.mjs';
+import { MAX_BYTES, archiveBatch, initializeState, prepareUpdate, readBatchHistory, readState, startBatch, validateTracker, writeState } from './state.mjs';
 
 const signingKeys = new Map();
 
@@ -38,13 +38,19 @@ function sameOriginJson(request, url) {
 }
 
 async function batchesRequest(request, env, email, url) {
+  if (url.pathname === '/api/batches/save-current') {
+    return await saveCurrentBatchRequest(request, env, email, url);
+  }
   const id = url.pathname.startsWith('/api/batches/') ? url.pathname.slice('/api/batches/'.length) : null;
   if (id !== null && !/^(?:[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}|legacy-\d{4}-\d{2}-\d{2})$/i.test(id)) {
     return response({ error: 'Batch not found.' }, 404);
   }
   if (request.method === 'GET') {
     const result = await readBatchHistory(env.DB, id);
-    if (!id) return response({ batches: result });
+    if (!id) {
+      const current=await readState(env.DB);
+      return response({ batches: result.map(batch=>({...batch,active:batch.id===current?.data.activeBatch?.id})) });
+    }
     return result ? response(result) : response({ error: 'Batch not found.' }, 404);
   }
   if (request.method === 'DELETE') {
@@ -63,6 +69,9 @@ async function batchesRequest(request, env, email, url) {
     current = await scanArchivedBatchLocks(env.DB, current, email);
     if (input.revision !== current.revision) {
       return response({ error: 'The tracker changed. Refresh batch history and try again.' }, 409);
+    }
+    if (current.data.activeBatch?.id === id) {
+      return response({ error: 'The active batch cannot be deleted. Start the next batch first.' }, 409);
     }
     if (id.startsWith('legacy-')) {
       if (!await readBatchHistory(env.DB, id)) return response({ error: 'Batch not found.' }, 404);
@@ -97,6 +106,44 @@ async function batchesRequest(request, env, email, url) {
   return await writeState(env.DB, current.revision, update, email, archive)
     ? response({ revision: current.revision + 1, data, email }, 201)
     : conflict();
+}
+
+async function saveCurrentBatchRequest(request, env, email, url) {
+  if (request.method !== 'POST') return response({ error: 'Method not allowed.' }, 405);
+  if (!sameOriginJson(request, url)) return response({ error: 'Expected a same-origin JSON request.' }, 403);
+  if (Number(request.headers.get('Content-Length')) > MAX_BYTES) return response({ error: 'Tracking update is too large.' }, 413);
+  let input;
+  try {
+    input = await request.json();
+    if (!Number.isSafeInteger(input?.revision) || input.revision < 1 || !input.data || typeof input.data !== 'object') throw new Error();
+  } catch {
+    return response({ error: 'Invalid batch save request.' }, 400);
+  }
+  let current = await readState(env.DB);
+  if (!current) return response({ error: 'Import tracking data before saving a batch.' }, 503);
+  current = await scanArchivedBatchLocks(env.DB, current, email);
+  if (input.revision !== current.revision) {
+    return response({ error: 'The tracker changed. Refresh the list and print again.' }, 409);
+  }
+  if (!current.data.activeBatch?.id || (!input.data.snapshot && !Object.keys(input.data.records ?? {}).length)) {
+    return response({ error: 'The current batch has no schedule to save.' }, 400);
+  }
+  const data = input.data;
+  for (const field of ['mouldingOverrides', 'activeBatch', 'priorScheduledArchiveScanAt']) {
+    if (Object.hasOwn(current.data, field)) data[field] = current.data[field];
+    else delete data[field];
+  }
+  data.priorScheduled = { ...(current.data.priorScheduled ?? {}), ...(data.priorScheduled ?? {}) };
+  let update, archive;
+  try {
+    update = prepareUpdate(data, current.data, email);
+    archive = archiveBatch(data, update.timestamp);
+  } catch (error) {
+    return response({ error: error.message }, 400);
+  }
+  return await writeState(env.DB, current.revision, update, email, archive)
+    ? response({ revision: current.revision + 1, data, email })
+    : response({ error: 'The tracker changed. Refresh the list and print again.' }, 409);
 }
 
 async function overridesRequest(request, env, email, url) {
@@ -242,6 +289,7 @@ async function scanArchivedBatchLocks(db, current, email) {
   data.priorScheduled ??= {};
   const batches = await readBatchHistory(db);
   for (const summary of batches) {
+    if (summary.id === current.data.activeBatch?.id) continue;
     const batch = await readBatchHistory(db, summary.id);
     if (batch?.data) mergeBatchLocks(data, batch);
   }

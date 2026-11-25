@@ -340,11 +340,11 @@ async function refreshShared(){
   }
 }
 
-async function save(success){
+async function save(success, saveBatch=false){
   saving=true;
   render();
   try{
-    acceptShared(await sharedRequest({revision,data:db}));
+    acceptShared(await sharedRequest({revision,data:db},saveBatch?'POST':'PUT',saveBatch?'/api/batches/save-current':'/api/state'));
     message(success);
     return true;
   }catch(error){
@@ -381,7 +381,8 @@ async function openSavedBatch(id){
     const batch=await sharedRequest(null,'GET','/api/batches/'+encodeURIComponent(id));
     if(!$('batchHistory').open)return;
     viewingBatch=batch;
-    tab=batch.day?(Object.values(batch.data.records).some(row=>row.status==='Sent to Moulder')?'sent':'pull'):'new';
+    const savedStatuses=Object.values(batch.data.records??{}).map(row=>row.status);
+    tab=savedStatuses.includes('Sent to Moulder')?'sent':savedStatuses.includes('To Pull')?'pull':savedStatuses.includes('To Run')?'run':'new';
     selection.clear();
     $('search').value='';
     $('batchHistory').close();
@@ -411,10 +412,17 @@ $('viewBatches').onclick=async()=>{
       const remove=document.createElement('button');
       remove.type='button';
       remove.className='batch-delete';
-      remove.textContent='Delete';
-      remove.setAttribute('aria-label','Delete batch '+batchLabel(batch));
-      remove.onclick=()=>deleteSavedBatch(batch.id,batchLabel(batch),entry);
-      entry.append(remove);
+      if(batch.active){
+        const active=document.createElement('span');
+        active.className='muted';
+        active.textContent='Current batch';
+        entry.append(active);
+      }else{
+        remove.textContent='Delete';
+        remove.setAttribute('aria-label','Delete batch '+batchLabel(batch));
+        remove.onclick=()=>deleteSavedBatch(batch.id,batchLabel(batch),entry);
+        entry.append(remove);
+      }
       list.append(entry);
     }
   }catch(error){status.textContent=error.message;}
@@ -488,7 +496,7 @@ function archiveMissing(rows){const live=new Set(rows.map(r=>r.key));db.archived
 $('apply').onclick=()=>changeSelected('To Run');$('pull').onclick=()=>changeSelected('To Pull');$('reset').onclick=()=>changeSelected('New');
 function finishReport(){if(!pendingPrint)return;$('reportDoneDetail').textContent=pendingPrint.rows.length+' lines in report '+pendingPrint.id+' · Batch '+String(pendingPrint.batchId||'').slice(0,8);$('reportDoneDetail').textContent+=' · Check all grouped order pages and profile drawings, including any manual-drawing reminders.';if(!$('reportDone').open)$('reportDone').showModal();}
 $('send').onclick=finishReport;$('notPrinted').onclick=()=>{$('reportDone').close();pendingPrint=null;message('Items remain in To Run. Print again when ready.');render();};
-$('printedSave').onclick=async()=>{const batch=pendingPrint;if(busy()||!batch?.rows.length)return;const rows=batch.rows.map(r=>currentRows().find(x=>x.key===r.key));if(rows.some((r,i)=>!r||r.alreadyRun||priorBatchHandled(r)||record(r)?.status!=='To Run'||r.fingerprint!==batch.rows[i].fingerprint||review(r).length)){$('reportDone').close();message('The prepared report no longer matches the current To Run list. Print a fresh report before marking it sent.',true);return;}$('reportDone').close();markRows(rows,'Sent to Moulder');db.reports??=[];db.reports.push({...batch,sentAt:now()});db.pendingRunReport=null;pendingPrint=null;selection.clear();await save('Report marked sent. Those lines will not appear in a future decision list.');};
+$('printedSave').onclick=async()=>{const batch=pendingPrint;if(busy()||!batch?.rows.length)return;const rows=batch.rows.map(r=>currentRows().find(x=>x.key===r.key));if(rows.some((r,i)=>!r||r.alreadyRun||priorBatchHandled(r)||record(r)?.status!=='To Run'||r.fingerprint!==batch.rows[i].fingerprint||review(r).length)){$('reportDone').close();message('The prepared report no longer matches the current To Run list. Print a fresh report before marking it sent.',true);return;}$('reportDone').close();markRows(rows,'Sent to Moulder');db.reports??=[];db.reports.push({...batch,sentAt:now()});db.pendingRunReport=null;pendingPrint=null;selection.clear();await save('Report marked sent and batch history saved. Those lines will not appear in a future decision list.',true);};
 $('search').oninput=()=>{selection.clear();render();};
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{tab=button.dataset.tab;selection.clear();render();});
 const profileDrawings=new Map();

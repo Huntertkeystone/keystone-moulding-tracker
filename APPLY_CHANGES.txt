@@ -1,0 +1,10 @@
+Keystone Moulding Tracker — change-only package
+
+Compared with the project ZIP supplied for this task, these four existing application files changed in the latest tracker project. Replace the matching files in your project with these versions; leave all other project files as they are.
+
+Also included: Keystone_Moulding_Tracker_Batch_Backfill.sql, which adds the reconstructed Nov. 25 batch-history row to the remote D1 tracker_batches table. Copy this SQL file into the project root (next to wrangler.jsonc), then run once from that folder:
+
+npx wrangler d1 execute keystone-moulding-tracker --remote --file=Keystone_Moulding_Tracker_Batch_Backfill.sql
+
+Verify with:
+npx wrangler d1 execute keystone-moulding-tracker --remote --command="SELECT id, position, started_at, saved_at FROM tracker_batches WHERE id = '2adc9d5b-0c01-4c00-a1f5-679e5b379d30';"

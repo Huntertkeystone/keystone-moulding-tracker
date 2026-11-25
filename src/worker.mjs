@@ -137,8 +137,25 @@ async function setupRequest(request, env, email, url) {
 
 async function stateRequest(request, env, email, url) {
   if (request.method === 'GET') {
-    const current = await readState(env.DB);
-    return current ? response({ ...current, email }) : response({ needsSetup: true, canInitialize: canInitialize(env, email), email });
+    let current = await readState(env.DB);
+    if (!current) return response({ needsSetup: true, canInitialize: canInitialize(env, email), email });
+    if (!current.data.priorScheduledArchiveScanAt) {
+      const data = structuredClone(current.data);
+      data.priorScheduled ??= {};
+      const batches = await readBatchHistory(env.DB);
+      for (const summary of batches) {
+        const batch = await readBatchHistory(env.DB, summary.id);
+        if (batch?.data) mergeBatchLocks(data, batch);
+      }
+      data.priorScheduledArchiveScanAt = new Date().toISOString();
+      const update = prepareUpdate(data, current.data, email);
+      if (await writeState(env.DB, current.revision, update, email)) {
+        current = { revision: current.revision + 1, data };
+      } else {
+        current = await readState(env.DB) ?? current;
+      }
+    }
+    return response({ ...current, email });
   }
   if (request.method !== 'PUT') return response({ error: 'Method not allowed.' }, 405);
   if (!sameOriginJson(request, url)) {
@@ -164,10 +181,14 @@ async function stateRequest(request, env, email, url) {
   let update;
   try {
     if (input.data && typeof input.data === 'object') {
-      for (const field of ['mouldingOverrides', 'activeBatch', 'priorScheduled']) {
+      for (const field of ['mouldingOverrides', 'activeBatch', 'priorScheduledArchiveScanAt']) {
         if (Object.hasOwn(current.data, field)) input.data[field] = current.data[field];
         else delete input.data[field];
       }
+      input.data.priorScheduled = {
+        ...(current.data.priorScheduled ?? {}),
+        ...(input.data.priorScheduled ?? {})
+      };
     }
     update = prepareUpdate(input.data, current.data, email);
   } catch (error) {
@@ -175,6 +196,29 @@ async function stateRequest(request, env, email, url) {
   }
   const written = await writeState(env.DB, current.revision, update, email);
   return written ? response({ revision: current.revision + 1, data: input.data, email }) : conflict();
+}
+
+function mergeBatchLocks(current, batch) {
+  const prior = current.priorScheduled;
+  const add = (row, status, at) => {
+    if (!row || typeof row.order !== 'string' || typeof row.number !== 'string') return;
+    if (!['To Run', 'To Pull', 'Sent to Moulder', 'Already Run'].includes(status)) return;
+    const key = row.order + '|' + row.number;
+    if (!prior[key]) prior[key] = [status, at ?? batch.savedAt ?? new Date().toISOString()];
+  };
+  const data = batch.data;
+  for (const row of [...Object.values(data.archivedRecords ?? {}), ...Object.values(data.records ?? {})]) {
+    add(row, row.status, row.markedAt);
+  }
+  for (const entry of data.history ?? []) {
+    for (const row of [entry.previous, entry.current]) add(row, row?.status ?? entry.status, entry.at);
+  }
+  for (const report of data.reports ?? []) {
+    for (const row of report.rows ?? []) add(row, 'Sent to Moulder', report.sentAt);
+  }
+  for (const row of data.snapshot?.rows ?? []) {
+    if (row.alreadyRun) add(row, 'Already Run', data.snapshot.importedAt ?? batch.savedAt);
+  }
 }
 
 export default {

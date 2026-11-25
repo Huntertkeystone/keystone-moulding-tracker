@@ -118,7 +118,16 @@ function stampAudit(data, previous, email, timestamp) {
 
 export function prepareUpdate(data, previous, email) {
   validateTracker(data);
+  data.priorScheduled = { ...(previous.priorScheduled ?? {}), ...(data.priorScheduled ?? {}) };
   const timestamp = new Date().toISOString();
+  for (const key of [...(previous.sentKeys ?? []), ...(data.sentKeys ?? [])]) {
+    const match = key.match(/^(\d{6})-(\d{4})-/);
+    if (match && !data.priorScheduled[match[1] + '|' + match[2]]) {
+      data.priorScheduled[match[1] + '|' + match[2]] = ['Sent to Moulder', timestamp];
+    }
+  }
+  delete data.sentKeys;
+  delete data.alreadyRunKeys;
   stampAudit(data, previous, email, timestamp);
   return { timestamp, chunks: splitState(data) };
 }
@@ -261,7 +270,34 @@ export function startBatch(data) {
     const markedAt = Number.isFinite(Date.parse(row.markedAt)) ? new Date(row.markedAt).toISOString() : timestamp;
     if (!priorScheduled[key] || priorScheduled[key][1] <= markedAt) priorScheduled[key] = [row.status, markedAt];
   }
-  const { priorScheduled: _prior, ...saved } = data;
+  for (const row of data.snapshot?.rows ?? []) {
+    if (!row.alreadyRun) continue;
+    const key = row.order + '|' + row.number;
+    if (!priorScheduled[key]) priorScheduled[key] = ['Already Run', timestamp];
+  }
+  for (const entry of data.history ?? []) {
+    for (const row of [entry.previous, entry.current]) {
+      if (!row || !['To Pull', 'To Run', 'Sent to Moulder'].includes(row.status)
+        || typeof row.order !== 'string' || typeof row.number !== 'string') continue;
+      const key = row.order + '|' + row.number;
+      const markedAt = Number.isFinite(Date.parse(entry.at)) ? new Date(entry.at).toISOString() : timestamp;
+      if (!priorScheduled[key] || priorScheduled[key][1] <= markedAt) priorScheduled[key] = [row.status, markedAt];
+    }
+  }
+  for (const report of data.reports ?? []) {
+    for (const row of report.rows ?? []) {
+      if (typeof row.order !== 'string' || typeof row.number !== 'string') continue;
+      const key = row.order + '|' + row.number;
+      if (!priorScheduled[key]) priorScheduled[key] = ['Sent to Moulder', report.sentAt ?? timestamp];
+    }
+  }
+  for (const key of data.sentKeys ?? []) {
+    const match = key.match(/^(\d{6})-(\d{4})-/);
+    if (match && !priorScheduled[match[1] + '|' + match[2]]) {
+      priorScheduled[match[1] + '|' + match[2]] = ['Sent to Moulder', timestamp];
+    }
+  }
+  const { priorScheduled: _prior, sentKeys: _sentKeys, alreadyRunKeys: _alreadyRunKeys, ...saved } = data;
   const archive = {
     id: data.activeBatch?.id ?? crypto.randomUUID(),
     startedAt: data.activeBatch?.startedAt ?? data.snapshot?.importedAt ?? timestamp,
@@ -270,6 +306,8 @@ export function startBatch(data) {
   };
   const next = {
     ...data, activeBatch: { id: crypto.randomUUID(), startedAt: timestamp }, priorScheduled,
+    sentKeys: undefined,
+    alreadyRunKeys: undefined,
     records: {}, archivedRecords: {}, snapshot: null, history: [], reports: [],
     pendingRunReport: null, savedAt: timestamp
   };

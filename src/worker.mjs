@@ -47,6 +47,36 @@ async function batchesRequest(request, env, email, url) {
     if (!id) return response({ batches: result });
     return result ? response(result) : response({ error: 'Batch not found.' }, 404);
   }
+  if (request.method === 'DELETE') {
+    if (!id) return response({ error: 'Choose a saved batch to delete.' }, 400);
+    if (!sameOriginJson(request, url)) return response({ error: 'Expected a same-origin JSON request.' }, 403);
+    if (Number(request.headers.get('Content-Length')) > 4096) return response({ error: 'Invalid delete request.' }, 400);
+    let input;
+    try {
+      input = await request.json();
+      if (!Number.isSafeInteger(input?.revision) || input.revision < 1) throw new Error();
+    } catch {
+      return response({ error: 'Invalid delete request.' }, 400);
+    }
+    let current = await readState(env.DB);
+    if (!current) return response({ error: 'The tracker database needs its initial import.' }, 503);
+    current = await scanArchivedBatchLocks(env.DB, current, email);
+    if (input.revision !== current.revision) {
+      return response({ error: 'The tracker changed. Refresh batch history and try again.' }, 409);
+    }
+    if (id.startsWith('legacy-')) {
+      if (!await readBatchHistory(env.DB, id)) return response({ error: 'Batch not found.' }, 404);
+      const data = structuredClone(current.data);
+      data.deletedBatchIds = [...new Set([...(data.deletedBatchIds ?? []), id])];
+      const update = prepareUpdate(data, current.data, email);
+      return await writeState(env.DB, current.revision, update, email)
+        ? response({ deleted: true, id, revision: current.revision + 1, data, email })
+        : response({ error: 'The tracker changed. Refresh batch history and try again.' }, 409);
+    }
+    const result = await env.DB.prepare('DELETE FROM tracker_batches WHERE id = ?').bind(id).run();
+    if (!result.meta.changes) return response({ error: 'Batch not found.' }, 404);
+    return response({ deleted: true, id });
+  }
   if (id || request.method !== 'POST') return response({ error: 'Method not allowed.' }, 405);
   if (!sameOriginJson(request, url)) return response({ error: 'Expected a same-origin JSON request.' }, 403);
   let input;
@@ -139,22 +169,7 @@ async function stateRequest(request, env, email, url) {
   if (request.method === 'GET') {
     let current = await readState(env.DB);
     if (!current) return response({ needsSetup: true, canInitialize: canInitialize(env, email), email });
-    if (!current.data.priorScheduledArchiveScanAt) {
-      const data = structuredClone(current.data);
-      data.priorScheduled ??= {};
-      const batches = await readBatchHistory(env.DB);
-      for (const summary of batches) {
-        const batch = await readBatchHistory(env.DB, summary.id);
-        if (batch?.data) mergeBatchLocks(data, batch);
-      }
-      data.priorScheduledArchiveScanAt = new Date().toISOString();
-      const update = prepareUpdate(data, current.data, email);
-      if (await writeState(env.DB, current.revision, update, email)) {
-        current = { revision: current.revision + 1, data };
-      } else {
-        current = await readState(env.DB) ?? current;
-      }
-    }
+    current = await scanArchivedBatchLocks(env.DB, current, email);
     return response({ ...current, email });
   }
   if (request.method !== 'PUT') return response({ error: 'Method not allowed.' }, 405);
@@ -219,6 +234,23 @@ function mergeBatchLocks(current, batch) {
   for (const row of data.snapshot?.rows ?? []) {
     if (row.alreadyRun) add(row, 'Already Run', data.snapshot.importedAt ?? batch.savedAt);
   }
+}
+
+async function scanArchivedBatchLocks(db, current, email) {
+  if (current.data.priorScheduledArchiveScanAt) return current;
+  const data = structuredClone(current.data);
+  data.priorScheduled ??= {};
+  const batches = await readBatchHistory(db);
+  for (const summary of batches) {
+    const batch = await readBatchHistory(db, summary.id);
+    if (batch?.data) mergeBatchLocks(data, batch);
+  }
+  data.priorScheduledArchiveScanAt = new Date().toISOString();
+  const update = prepareUpdate(data, current.data, email);
+  if (await writeState(db, current.revision, update, email)) {
+    return { revision: current.revision + 1, data };
+  }
+  return await readState(db) ?? current;
 }
 
 export default {

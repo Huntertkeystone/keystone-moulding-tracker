@@ -14,6 +14,8 @@ export function validateTracker(data) {
     || !isObject(data.records) || !Array.isArray(data.history)
     || (data.archivedRecords !== undefined && !isObject(data.archivedRecords))
     || (data.reports !== undefined && !Array.isArray(data.reports))
+    || (data.deletedBatchIds !== undefined && (!Array.isArray(data.deletedBatchIds)
+      || data.deletedBatchIds.some(id => typeof id !== 'string' || !id.startsWith('legacy-'))))
     || data.history.some(entry => !isObject(entry))
     || data.reports?.some(report => !isObject(report))
     || (data.snapshot && (!Array.isArray(data.snapshot.rows) || !data.snapshot.rows.every(isRow)))
@@ -119,6 +121,7 @@ function stampAudit(data, previous, email, timestamp) {
 export function prepareUpdate(data, previous, email) {
   validateTracker(data);
   data.priorScheduled = { ...(previous.priorScheduled ?? {}), ...(data.priorScheduled ?? {}) };
+  data.deletedBatchIds = [...new Set([...(previous.deletedBatchIds ?? []), ...(data.deletedBatchIds ?? [])])];
   const timestamp = new Date().toISOString();
   for (const key of [...(previous.sentKeys ?? []), ...(data.sentKeys ?? [])]) {
     const match = key.match(/^(\d{6})-(\d{4})-/);
@@ -256,8 +259,9 @@ export async function readBatchHistory(db, id) {
     legacy = saved.length ? (await readBatches(db, saved.at(-1).id))?.data : null;
   }
   const reconstructed = legacy && !legacy.activeBatch ? reconstructDatedBatches(legacy) : [];
-  if (id) return reconstructed.find(batch => batch.id === id) ?? null;
-  return [...saved, ...reconstructed.map(({ data: _data, ...batch }) => batch)]
+  const deleted = new Set(current?.data.deletedBatchIds ?? []);
+  if (id) return deleted.has(id) ? null : reconstructed.find(batch => batch.id === id) ?? null;
+  return [...saved, ...reconstructed.map(({ data: _data, ...batch }) => batch).filter(batch => !deleted.has(batch.id))]
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 

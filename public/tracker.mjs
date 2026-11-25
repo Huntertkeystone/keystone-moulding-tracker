@@ -400,14 +400,43 @@ $('viewBatches').onclick=async()=>{
     const {batches}=await sharedRequest(null,'GET','/api/batches');
     status.textContent=batches.length?'':'No saved batches yet.';
     for(const batch of batches){
-      const button=document.createElement('button');
-      button.type='button';
-      button.textContent=batchLabel(batch);
-      button.onclick=()=>openSavedBatch(batch.id);
-      list.append(button);
+      const entry=document.createElement('div');
+      entry.className='batch-entry';
+      const open=document.createElement('button');
+      open.type='button';
+      open.className='batch-open';
+      open.textContent=batchLabel(batch);
+      open.onclick=()=>openSavedBatch(batch.id);
+      entry.append(open);
+      const remove=document.createElement('button');
+      remove.type='button';
+      remove.className='batch-delete';
+      remove.textContent='Delete';
+      remove.setAttribute('aria-label','Delete batch '+batchLabel(batch));
+      remove.onclick=()=>deleteSavedBatch(batch.id,batchLabel(batch),entry);
+      entry.append(remove);
+      list.append(entry);
     }
   }catch(error){status.textContent=error.message;}
 };
+async function deleteSavedBatch(id,label,entry){
+  if(busy()||!confirm('Delete batch '+label+' from history? Items already marked in it will remain blocked from future lists.'))return;
+  saving=true;
+  render();
+  const list=$('batchHistoryList'),status=$('batchHistoryStatus');
+  for(const button of list.querySelectorAll('button'))button.disabled=true;
+  try{
+    const result=await sharedRequest({revision},'DELETE','/api/batches/'+encodeURIComponent(id));
+    if(result.data)acceptShared(result);
+    entry.remove();
+    status.textContent=list.children.length?'Batch deleted.':'No saved batches yet.';
+  }catch(error){status.textContent=error.message;}
+  finally{
+    saving=false;
+    for(const button of list.querySelectorAll('button'))button.disabled=false;
+    render();
+  }
+}
 $('backToBatch').onclick=()=>{
   viewingBatch=null;
   tab='new';
